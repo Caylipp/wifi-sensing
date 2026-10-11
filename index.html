@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WLAN-Sensing Dashboard</title>
+<style>
+  :root { --bg:#0f1419; --panel:#182028; --fg:#e6edf3; --mute:#8b98a5; --acc:#4cc2ff; --ok:#3fb950; --warn:#f0883e; --grid:#26313b; }
+  @media (prefers-color-scheme: light) { :root { --bg:#f4f6f8; --panel:#fff; --fg:#1b2530; --mute:#5f6f7d; --acc:#0b7bc0; --ok:#1a7f37; --warn:#c2570c; --grid:#dde3e8; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.4 system-ui, sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:14px 16px; display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between; }
+  h1 { font-size:18px; margin:0; }
+  .badge { padding:2px 8px; border-radius:99px; background:var(--warn); color:#fff; font-size:12px; }
+  main { display:grid; gap:12px; padding:0 16px 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+  section { background:var(--panel); border-radius:10px; padding:12px; }
+  h2 { font-size:13px; margin:0 0 8px; color:var(--mute); font-weight:600; }
+  canvas { width:100%; display:block; border-radius:6px; }
+  #state { font-size:28px; font-weight:700; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:8px; }
+  button { background:var(--bg); color:var(--fg); border:1px solid var(--grid); border-radius:6px; padding:6px 10px; cursor:pointer; font:inherit; }
+  button.on { border-color:var(--acc); color:var(--acc); }
+  small { color:var(--mute); }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WLAN-Sensing <span class="badge" id="src">Simulation</span></h1>
+  <div class="row" style="margin:0">
+    <button data-src="sim" class="on">Simulation</button>
+    <button data-src="live">Live (Mac-RSSI)</button>
+  </div>
+</header>
+<main>
+  <section>
+    <h2>Raum (Draufsicht)</h2>
+    <canvas id="room" width="600" height="400"></canvas>
+    <div class="row" id="simctl">
+      <button data-mode="walk" class="on">Person läuft</button>
+      <button data-mode="still">Person steht still</button>
+      <button data-mode="absent">Raum leer</button>
+    </div>
+    <small id="roomhint">Bei „steht still“ die Person mit der Maus im Raum verschieben.</small>
+    <div class="row" id="livectl" hidden><button id="cal">Kalibrieren (15 s, Strecke frei halten)</button></div>
+  </section>
+  <section>
+    <h2>Erkennung</h2>
+    <div id="state">leer</div>
+    <small><span id="l1">Bewegung (1 s)</span>: <b id="m">0</b> · <span id="l2">Ruhe/Atmung (4 s)</span>: <b id="s">0</b></small>
+    <canvas id="chart" width="600" height="140"></canvas>
+    <small id="charthint">Blau: Bewegung, Grün: 4-s-Wert. Linien: Schwellen.</small>
+  </section>
+  <section>
+    <h2 id="wfh">CSI-Amplitude: 52 Unterträger über die Zeit</h2>
+    <canvas id="wf" width="600" height="220"></canvas>
+    <small id="wfhint">x = Zeit (letzte 10 s), y = Unterträger, Helligkeit = Amplitude.</small>
+  </section>
+</main>
+<script src="core.js"></script>
+<script>
+const { N_SC, RATE, Simulator, Analyzer, RssiAnalyzer } = WifiSensing;
+const $ = id => document.getElementById(id);
+const sim = new Simulator(), simAn = new Analyzer(), liveAn = new RssiAnalyzer();
+let an = simAn, mode = 'sim', es = null;
+const rssiHist = [];
+const room = $('room').getContext('2d'), chart = $('chart').getContext('2d'), wf = $('wf').getContext('2d');
+const HIST = RATE * 10;
+const motionHist = [], slowHist = [], frames = [];
+let truth = null;
+
+// Datenquelle: hier später ein WebSocket auf echte ESP32-CSI einsetzen (Frames {amp:[52]}).
+function onFrame(f) {
+  if (mode !== 'sim') return;
+  an.push(f.amp); truth = f.truth;
+  frames.push(f.amp); motionHist.push(an.motion); slowHist.push(an.slow);
+  for (const a of [frames, motionHist, slowHist]) if (a.length > HIST) a.shift();
+}
+
+function drawRoom() {
+  const c = room, W = 600, H = 400, sx = W / sim.room.w, sy = H / sim.room.h;
+  const X = x => x * sx, Y = y => y * sy, css = n => getComputedStyle(document.documentElement).getPropertyValue(n);
+  c.clearRect(0, 0, W, H);
+  c.strokeStyle = css('--grid'); c.lineWidth = 1;
+  for (let x = 1; x < sim.room.w; x++) { c.beginPath(); c.moveTo(X(x), 0); c.lineTo(X(x), H); c.stroke(); }
+  for (let y = 1; y < sim.room.h; y++) { c.beginPath(); c.moveTo(0, Y(y)); c.lineTo(W, Y(y)); c.stroke(); }
+  // Fresnel-artige Zone um die Funkstrecke
+  const tx = sim.tx, rx = sim.rx, ang = Math.atan2((rx.y - tx.y) * sy, (rx.x - tx.x) * sx);
+  c.save(); c.translate(X((tx.x + rx.x) / 2), Y((tx.y + rx.y) / 2)); c.rotate(ang);
+  c.beginPath(); c.ellipse(0, 0, Math.hypot((rx.x - tx.x) * sx, (rx.y - tx.y) * sy) / 2, 55, 0, 0, 7);
+  c.fillStyle = 'rgba(76,194,255,0.10)'; c.fill(); c.restore();
+  c.strokeStyle = mode === 'live' && an.state === 'Bewegung' ? css('--warn') : css('--acc'); c.lineWidth = mode === 'live' ? 4 : 1; c.setLineDash([6, 6]);
+  c.beginPath(); c.moveTo(X(tx.x), Y(tx.y)); c.lineTo(X(rx.x), Y(rx.y)); c.stroke(); c.setLineDash([]);
+  // Knoten
+  const node = (p, label) => { c.fillStyle = css('--acc'); c.fillRect(X(p.x) - 8, Y(p.y) - 8, 16, 16); c.fillStyle = css('--fg'); c.font = '12px system-ui'; const right = X(p.x) > W * 0.7; c.textAlign = right ? 'right' : 'left'; c.fillText(label, X(p.x) + (right ? -12 : 12), Y(p.y) + 4); c.textAlign = 'left'; };
+  node(tx, 'Router'); node(rx, mode === 'live' ? 'Dieser Mac' : 'Empfänger');
+  // Person (Wahrheit) + Schätzung als Aura
+  if (mode === 'sim' && truth && truth.present) {
+    const col = an.state === 'Bewegung' ? css('--warn') : an.state === 'ruhig anwesend' ? css('--ok') : css('--mute');
+    c.fillStyle = col; c.globalAlpha = 0.25; c.beginPath(); c.arc(X(truth.x), Y(truth.y), 34, 0, 7); c.fill(); c.globalAlpha = 1;
+    c.beginPath(); c.arc(X(truth.x), Y(truth.y), 9, 0, 7); c.fillStyle = css('--fg'); c.fill();
+  }
+}
+
+function drawChart() {
+  const c = chart, W = 600, H = 140, css = n => getComputedStyle(document.documentElement).getPropertyValue(n);
+  c.clearRect(0, 0, W, H);
+  const MAXV = an.maxv || 0.4, TH = an.thresh || Analyzer.THRESH, y = v => H - Math.min(v / MAXV, 1) * (H - 6) - 3;
+  const line = (arr, col) => { c.strokeStyle = col; c.lineWidth = 2; c.beginPath(); arr.forEach((v, i) => { const x = i / (HIST - 1) * W; i ? c.lineTo(x, y(v)) : c.moveTo(x, y(v)); }); c.stroke(); };
+  c.lineWidth = 1; c.setLineDash([4, 4]); c.strokeStyle = css('--warn');
+  c.beginPath(); c.moveTo(0, y(TH.motion)); c.lineTo(W, y(TH.motion)); c.stroke();
+  c.strokeStyle = css('--ok');
+  if (TH.presence) { c.beginPath(); c.moveTo(0, y(TH.presence)); c.lineTo(W, y(TH.presence)); c.stroke(); } c.setLineDash([]);
+  line(slowHist, css('--ok')); line(motionHist, css('--acc'));
+}
+
+function drawRssi() {
+  const W = 600, H = 220, css = n => getComputedStyle(document.documentElement).getPropertyValue(n);
+  wf.fillStyle = css('--bg'); wf.fillRect(0, 0, W, H);
+  if (rssiHist.length < 2) return;
+  const lo = Math.min(...rssiHist.map(s => s.v)) - 2, hi = Math.max(...rssiHist.map(s => s.v)) + 2, t1 = rssiHist[rssiHist.length - 1].t;
+  wf.strokeStyle = css('--acc'); wf.lineWidth = 2; wf.beginPath();
+  rssiHist.forEach((s, i) => { const x = W - (t1 - s.t) / 10 * W, y = H - (s.v - lo) / (hi - lo) * H; i ? wf.lineTo(x, y) : wf.moveTo(x, y); });
+  wf.stroke(); wf.fillStyle = css('--mute'); wf.font = '12px system-ui';
+  wf.fillText(hi.toFixed(0) + ' dBm', 4, 14); wf.fillText(lo.toFixed(0) + ' dBm', 4, H - 6);
+}
+
+function drawWaterfall() {
+  const W = 600, H = 220, colW = W / HIST, rowH = H / N_SC;
+  wf.fillStyle = '#000'; wf.fillRect(0, 0, W, H);
+  frames.forEach((a, i) => {
+    for (let k = 0; k < N_SC; k++) {
+      const v = Math.max(0, Math.min(1, (a[k] - 0.2) / 1.6)); // ~0.2..1.8 -> 0..1
+      wf.fillStyle = `hsl(${240 - v * 240}, 90%, ${18 + v * 40}%)`;
+      wf.fillRect(i * colW, k * rowH, colW + 0.5, rowH + 0.5);
+    }
+  });
+}
+
+function loop() {
+  drawRoom(); drawChart(); mode === 'live' ? drawRssi() : drawWaterfall();
+  $('state').textContent = an.state; $('m').textContent = an.motion.toFixed(mode === 'live' ? 2 : 3) + (mode === 'live' ? ' dB' : ''); $('s').textContent = an.slow.toFixed(mode === 'live' ? 2 : 3) + (mode === 'live' ? ' dB' : '');
+  requestAnimationFrame(loop);
+}
+setInterval(() => { sim.step(1 / RATE); onFrame(sim.frame()); }, 1000 / RATE);
+requestAnimationFrame(loop);
+
+document.querySelectorAll('button[data-mode]').forEach(b => b.onclick = () => {
+  document.querySelectorAll('button[data-mode]').forEach(x => x.classList.toggle('on', x === b));
+  const p = sim.person, m = b.dataset.mode;
+  p.present = m !== 'absent'; p.mode = m === 'absent' ? 'still' : m;
+});
+$('room').addEventListener('pointermove', e => {
+  if (sim.person.mode !== 'still' || !sim.person.present || e.buttons !== 1) return;
+  const r = e.target.getBoundingClientRect();
+  sim.person.x = (e.clientX - r.left) / r.width * sim.room.w; sim.person.y = (e.clientY - r.top) / r.height * sim.room.h;
+});
+
+function setSource(src) {
+  mode = src; an = src === 'live' ? liveAn : simAn;
+  document.querySelectorAll('button[data-src]').forEach(x => x.classList.toggle('on', x.dataset.src === src));
+  const live = src === 'live';
+  $('src').textContent = live ? 'Live: Mac-RSSI' : 'Simulation';
+  $('simctl').hidden = live; $('livectl').hidden = !live;
+  $('roomhint').textContent = live ? 'Prototyp: nur eine Funkstrecke (Mac ↔ Router), keine Position. Erst kalibrieren, dann in der Nähe der Strecke bewegen.' : 'Bei „steht still“ die Person mit der Maus im Raum verschieben.';
+  $('l1').textContent = live ? 'RSSI-Streuung (3 s)' : 'Bewegung (1 s)'; $('l2').textContent = live ? 'RSSI-Streuung (10 s)' : 'Ruhe/Atmung (4 s)';
+  $('charthint').textContent = live ? 'Blau: Streuung in dB. Linie: Schwelle (nach Kalibrierung).' : 'Blau: Bewegung, Grün: 4-s-Wert. Linien: Schwellen.';
+  $('wfh').textContent = live ? 'RSSI-Verlauf (dBm, letzte 10 s)' : 'CSI-Amplitude: 52 Unterträger über die Zeit';
+  $('wfhint').textContent = live ? 'Ein einzelner Wert pro Messung, ca. 4 Hz, 1 dB Auflösung.' : 'x = Zeit (letzte 10 s), y = Unterträger, Helligkeit = Amplitude.';
+  motionHist.length = slowHist.length = 0;
+  if (es) { es.close(); es = null; }
+  if (live) {
+    es = new EventSource('/stream');
+    es.onmessage = e => { const m = JSON.parse(e.data); liveAn.push(m.t, m.rssi); rssiHist.push({ t: m.t, v: m.rssi }); while (rssiHist.length && m.t - rssiHist[0].t > 10) rssiHist.shift();
+      motionHist.push(liveAn.motion); slowHist.push(liveAn.slow); if (motionHist.length > HIST) { motionHist.shift(); slowHist.shift(); } };
+    es.onerror = () => { $('src').textContent = 'Live: keine Verbindung (node server.js gestartet?)'; };
+  }
+}
+document.querySelectorAll('button[data-src]').forEach(b => b.onclick = () => setSource(b.dataset.src));
+$('cal').onclick = () => liveAn.calibrate(15);
+if (location.protocol.startsWith('http') && location.search.includes('live')) setSource('live');
+</script>
+</body>
+</html>
