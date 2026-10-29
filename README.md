@@ -1,21 +1,22 @@
-# WLAN-Sensing (Prototyp)
+# Wi-Fi Sensing
 
-Visualisiert, wie Menschen die WLAN-Funkstrecke stören. Zwei Datenquellen, gleiche Anzeige:
+[Deutsche Version](README.de.md)
 
-| Modus | Daten | Start |
+A prototype that visualizes how people **disturb a Wi-Fi radio link**, the basic idea behind Wi-Fi-based motion detection. Two data sources feed the same visualization:
+
+| Mode | Data | Start |
 |---|---|---|
-| Simulation | vereinfachtes CSI-Modell (52 Unterträger) in `core.js` | `index.html` direkt im Browser öffnen |
-| Live (Mac-RSSI) | echte Signalstärke des MacBook-WLANs zum Router | `node server.js`, dann http://localhost:8787/?live |
+| Simulation | simplified CSI model (52 subcarriers) in `core.js` | open `index.html` in a browser |
+| Live | real signal strength (RSSI) between the MacBook and the router | `node server.js`, then http://localhost:8787/?live |
 
-## Live-Modus
-- `rssi.swift` liest per CoreWLAN RSSI (dBm) mit ~10 Hz Abfrage; der Wert ändert sich real ~3-5x pro Sekunde, Auflösung 1 dB. Läuft ohne sudo. `server.js` kompiliert es beim ersten Start.
-- `server.js` pingt das Gateway (5 Hz), damit die RSSI laufend aktualisiert wird, und streamt per SSE an den Browser.
-- Erst **Kalibrieren** (15 s, Strecke frei), dann Bewegung nahe der Linie Mac-Router.
+## How the live mode works
 
-## Grenzen
-- Nur eine Zahl pro Messung, keine CSI: Bewegung ja, ruhige Person/Atmung/Position nein.
-- Echtes CSI braucht einen ESP32 (Datenquelle in `index.html` austauschbar, siehe Kommentar bei `onFrame`).
-- Simulation ist ein selbst gebautes Modell, keine Messung.
+- `rssi.swift` reads RSSI via **CoreWLAN** at ~10 Hz without root. `server.js` compiles it on first start.
+- `server.js` pings the gateway at 5 Hz to keep the RSSI value fresh and streams the samples to the browser via **Server-Sent Events**.
+- Calibrate for 15 s with the path clear, then movement near the Mac–router line becomes visible.
 
-## Beenden
-`./stop.sh` im Projektordner (oder Aktivitätsanzeige: `node`, `ping`, `rssi`). Nichts davon läuft nach einem Neustart weiter.
+## Limits (honestly)
+
+- RSSI is a single number per sample, not full CSI: it detects motion, but not stationary people, breathing or position.
+- Real CSI needs dedicated hardware such as an ESP32; the data source in `index.html` is swappable (see `onFrame`).
+- The simulation is a self-built model, not a measurement.
